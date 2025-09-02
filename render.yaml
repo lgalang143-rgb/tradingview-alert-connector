@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tac-webserver
+    env: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /
+    # Render builds your Dockerfile; your app listens on port 3000 (Docker maps to 80)
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRADINGVIEW_PASSPHRASE
+        value: TEST143
+      # You can add more envs later in the Render dashboard

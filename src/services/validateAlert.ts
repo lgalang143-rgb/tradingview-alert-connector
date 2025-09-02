@@ -26,7 +26,8 @@ export const validateAlert = async (
 
 	// check exchange
 	if (alertMessage.exchange) {
-		const validExchanges = new DexRegistry().getAllDexKeys();
+		const validExchanges = ['dydxv3','dydxv4','perpetual','gmx','bluefin','paper','mexc'];
+    validExchanges.push('paper');
 		if (!validExchanges.includes(alertMessage.exchange)) {
 			console.error('Exchange name must be dydx or perpetual or gmx or dydxv4');
 			return false;

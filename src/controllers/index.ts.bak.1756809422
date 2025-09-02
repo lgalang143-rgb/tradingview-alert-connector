@@ -1,0 +1,194 @@
+import * as paper from '../paper';
+import express, { Router } from 'express';
+import { validateAlert } from '../services';
+import { DexRegistry } from '../services/dexRegistry';
+
+const router: Router = express.Router();
+
+router.get('/', async (req, res) => {
+	res.send('OK');
+});
+
+router.get('/accounts', async (req, res) => {
+	console.log('Received GET request.');
+
+	const dexRegistry = new DexRegistry();
+	const dexNames = ['dydxv3', 'dydxv4', 'perpetual', 'gmx', 'bluefin'];
+	const dexClients = dexNames.map((name) => dexRegistry.getDex(name));
+
+	try {
+		const accountStatuses = await Promise.all(
+			dexClients.map((client) => client.getIsAccountReady())
+		);
+
+		const message = {
+			dYdX_v3: accountStatuses[0], // dydxv3
+			dYdX_v4: accountStatuses[1], // dydxv4
+			PerpetualProtocol: accountStatuses[2], // perpetual
+			GMX: accountStatuses[3], // gmx
+			Bluefin: accountStatuses[4] // bluefin
+		};
+		res.send(message);
+	} catch (error) {
+		console.error('Failed to get account readiness:', error);
+		res.status(500).send('Internal server error');
+	}
+});
+
+router.post('/', async (req, res) => {
+	console.log('Recieved Tradingview strategy alert:', req.body);
+
+	const validated = await validateAlert(req.body);
+	if (!validated) {
+		res.send('Error. alert message is not valid');
+		return;
+	}
+		
+	// set dydxv3 by default for backwards compatibility
+	const exchange = req.body['exchange']?.toLowerCase() || 'dydxv3';
+// >>> PAPER fast-path
+if (exchange === 'paper') {
+  try {
+    const result = await paper.placeOrder({
+      market: req.body['market'],
+      order: req.body['order'],
+      sizeUsd: req.body['sizeUsd'],
+      size: req.body['size'],
+      price: req.body['price'],
+      leverage: req.body['leverage'],
+    });
+    return res.json(result);
+  } catch (e: any) {
+    console.error('[paper]', e?.message || e);
+    return res.status(400).json({ ok: false, error: String(e?.message || e) });
+  }
+}
+// <<< PAPER fast-path
+
+
+
+
+	if (exchange === 'paper') {
+  try {
+    const result = await paper.placeOrder({
+      market: req.body['market'],
+      order: req.body['order'],       // "buy" | "sell"
+      sizeUsd: req.body['sizeUsd'],   // preferred
+      size: req.body['size'],         // fallback
+      price: req.body['price'],       // required for paper (fill @ price)
+      leverage: req.body['leverage'],
+    });
+    return res.json(result);
+  } catch (e: any) {
+    console.error('[paper]', e?.message || e);
+    return res.status(400).json({ ok: false, error: String(e?.message || e) });
+  }
+}
+
+	const dexClient = new DexRegistry().getDex(exchange);
+
+	if (!dexClient) {
+		res.send(`Error. Exchange: ${exchange} is not supported`);
+		return;
+	}
+
+	// TODO: add check if dex client isReady 
+
+	try {
+		const result = await dexClient.placeOrder(req.body);
+
+		res.send('OK');
+		// checkAfterPosition(req.body);
+	} catch (e) {
+		res.send('error');
+	}
+});
+
+router.get('/debug-sentry', function mainHandler(req, res) {
+	throw new Error('My first Sentry error!');
+});
+
+export default router;
+
+
+/**
+ * Lightweight endpoint that bypasses TAC's validateAlert for paper sim.
+ * Auth: requires X-Webhook-Secret (if set) and passphrase in body (if set).
+ */
+router.post('/paper', async (req, res) => {
+  try {
+    const expectedSecret = process.env.WEBHOOK_SECRET;
+    const expectedPass   = process.env.TRADINGVIEW_PASSPHRASE;
+    const gotSecret      = req.header('X-Webhook-Secret');
+    const gotPass        = req.body?.passphrase;
+
+    if (expectedSecret && gotSecret !== expectedSecret) {
+      return res.status(401).json({ ok:false, error:'bad webhook secret' });
+    }
+    if (expectedPass && gotPass !== expectedPass) {
+      return res.status(401).json({ ok:false, error:'bad passphrase' });
+    }
+
+    const result = await paper.placeOrder({
+      market:   req.body['market'],
+      order:    req.body['order'],
+      sizeUsd:  req.body['sizeUsd'],
+      size:     req.body['size'],
+      price:    req.body['price'],     // REQUIRED for paper to mark/fill
+      leverage: req.body['leverage'],
+    });
+    return res.json(result);
+  } catch (e) {
+    console.error('[paper /paper]', e && (e.message || e));
+    return res.status(400).json({ ok:false, error: String(e && (e.message || e)) });
+  }
+});
+
+
+/** Inspect paper state (balances/positions/PNL) */
+router.get('/paper/state', (_req, res) => {
+  try {
+    return res.json(paper.getState());
+  } catch (e) {
+    console.error('[paper /paper/state]', (e && (e.message || e)) || e);
+    return res.status(400).json({ ok:false, error: String((e && (e.message || e)) || e) });
+  }
+});
+
+/** Reset paper sim (clears trades/positions; restores USDC) */
+router.post('/paper/reset', (_req, res) => {
+  try {
+    paper.reset();
+    return res.json({ ok:true });
+  } catch (e) {
+    console.error('[paper /paper/reset]', (e && (e.message || e)) || e);
+    return res.status(400).json({ ok:false, error: String((e && (e.message || e)) || e) });
+  }
+});
+
+/**
+ * TradingView-friendly endpoint: no X-Webhook-Secret header.
+ * Checks passphrase in body against TRADINGVIEW_PASSPHRASE.
+ */
+router.post('/paper-tv', async (req, res) => {
+  try {
+    const expectedPass = process.env.TRADINGVIEW_PASSPHRASE;
+    const gotPass = req.body?.passphrase;
+    if (expectedPass && gotPass !== expectedPass) {
+      return res.status(401).json({ ok:false, error:'bad passphrase' });
+    }
+
+    const result = await paper.placeOrder({
+      market:   req.body['market'],
+      order:    req.body['order'],
+      sizeUsd:  req.body['sizeUsd'],
+      size:     req.body['size'],
+      price:    req.body['price'],   // REQUIRED for fill
+      leverage: req.body['leverage'],
+    });
+    return res.json(result);
+  } catch (e) {
+    console.error('[paper /paper-tv]', (e && (e.message || e)) || e);
+    return res.status(400).json({ ok:false, error: String((e && (e.message || e)) || e) });
+  }
+});

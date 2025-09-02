@@ -6,11 +6,11 @@ services:
     container_name: tac-webserver-1
     tty: true
     ports:
-      - '80:3000'
+      - '80:3000'              # host 80 -> container 3000
     volumes:
       - ./data:/app/data
     env_file:
-      - .env
+      - .env                   # <-- injects your .env
     environment:
       - NODE_ENV=production
     restart: unless-stopped
